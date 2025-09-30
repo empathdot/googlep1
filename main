@@ -21,15 +21,22 @@ dispatcher = updater.dispatcher
 clients = pd.read_csv('clients.csv')
 
 # Conversation states
-ADD_GV, IMPORT_SCRIPT, START_BATCH = range(3)
+ADD_GV, IMPORT_SCRIPT, START_BATCH, EDIT_SCRIPT, EDIT_GV = range(5)
+
+# DND check toggle
+dnd_check_enabled = False
 
 def start(update, context):
     update.message.reply_text('Welcome! Use the following commands:\n'
                               '/addgv - Add a Google Voice account\n'
                               '/importscript - Import a custom script\n'
+                              '/editscript - Edit the current script\n'
+                              '/editgv - Edit Google Voice accounts\n'
                               '/startbatch - Start a batch call\n'
-                              '/call <phone_number> - Make a call\n'
-                              '/dndcheck <phone_number> - Make a call with DND check')
+                              '/call <name> <platform> <email> <phone> - Make a call\n'
+                              '/dndcheck - Toggle DND check\n'
+                              '/viewscript - View the current script\n'
+                              '/viewgv - View current Google Voice accounts')
 
 def add_gv(update, context):
     update.message.reply_text('Please provide your Google Voice credentials in the format:\n'
@@ -39,6 +46,15 @@ def add_gv(update, context):
 def import_script(update, context):
     update.message.reply_text('Please provide your custom script. Use {name}, {email}, and {platform} as placeholders.')
     return IMPORT_SCRIPT
+
+def edit_script(update, context):
+    update.message.reply_text('Please provide the new script. Use {name}, {email}, and {platform} as placeholders.')
+    return EDIT_SCRIPT
+
+def edit_gv(update, context):
+    update.message.reply_text('Please provide the Google Voice account details you want to edit in the format:\n'
+                              'old email:new email:new password:new backup email:new backup email code (if asked)')
+    return EDIT_GV
 
 def start_batch(update, context):
     update.message.reply_text('Drop your data file here.')
@@ -68,48 +84,64 @@ def handle_import_script(update, context):
     update.message.reply_text('Script imported successfully.')
     return ConversationHandler.END
 
+def handle_edit_script(update, context):
+    script = update.message.text
+    context.user_data['script'] = script
+    update.message.reply_text('Script edited successfully.')
+    return ConversationHandler.END
+
+def handle_edit_gv(update, context):
+    details = update.message.text.split(':')
+    if len(details) < 4 or len(details) > 5:
+        update.message.reply_text('Invalid format. Please try again.')
+        return EDIT_GV
+
+    old_email, new_email, new_password, new_backup_email = details[:4]
+    new_backup_code = details[4] if len(details) == 5 else None
+
+    voice = Voice()
+    try:
+        voice.login(old_email, new_password, new_backup_email, new_backup_code)
+        update.message.reply_text('Google Voice account edited successfully.')
+    except AuthenticationError as e:
+        update.message.reply_text(f'Error: {e}')
+
+    return ConversationHandler.END
+
 def handle_start_batch(update, context):
     if 'document' in update.message:
         file = update.message.document.get_file()
-        file.download('clients.csv')
+        file.download('clients.txt')
         update.message.reply_text('Data file received. Starting batch calls.')
-        clients = pd.read_csv('clients.csv')
-        for index, row in clients.iterrows():
-            phone_number = row['phone']
-            name = row['name']
-            email = row['email']
-            platform = row['platform']
-            script = context.user_data.get('script', default_script)
-            script = script.format(name=name, email=email, platform=platform)
+        with open('clients.txt', 'r') as f:
+            lines = f.readlines()
+            for line in lines:
+                name, platform, email, phone = line.strip().split()
+                script = context.user_data.get('script', default_script)
+                script = script.format(name=name, email=email, platform=platform)
 
-            # Convert script to speech
-            tts = gTTS(text=script, lang='en')
-            tts.save("output.mp3")
+                # Convert script to speech
+                tts = gTTS(text=script, lang='en')
+                tts.save("output.mp3")
 
-            # Make the call
-            try:
-                call = voice.call(phone_number)
-                call.play("output.mp3")
-                update.message.reply_text(f'Calling {phone_number} with the script.')
-            except AuthenticationError as e:
-                update.message.reply_text(f'Error: {e}')
+                # Make the call
+                try:
+                    call = voice.call(phone)
+                    call.play("output.mp3")
+                    update.message.reply_text(f'Calling {phone} with the script.')
+                except AuthenticationError as e:
+                    update.message.reply_text(f'Error: {e}')
     else:
         update.message.reply_text('No data file received. Please try again.')
     return ConversationHandler.END
 
 def call(update, context):
-    phone_number = context.args[0]
-    client_data = clients[clients['phone'] == phone_number]
-
-    if client_data.empty:
-        update.message.reply_text(f'No client found with phone number {phone_number}.')
+    args = context.args
+    if len(args) != 4:
+        update.message.reply_text('Usage: /call <name> <platform> <email> <phone>')
         return
 
-    client_data = client_data.iloc[0]
-    name = client_data['name']
-    email = client_data['email']
-    platform = client_data['platform']
-
+    name, platform, email, phone = args
     script = context.user_data.get('script', default_script)
     script = script.format(name=name, email=email, platform=platform)
 
@@ -119,55 +151,37 @@ def call(update, context):
 
     # Make the call
     try:
-        call = voice.call(phone_number)
+        call = voice.call(phone)
         call.play("output.mp3")
-        update.message.reply_text(f'Calling {phone_number} with the script.')
+        update.message.reply_text(f'Calling {phone} with the script.')
     except AuthenticationError as e:
         update.message.reply_text(f'Error: {e}')
 
 def dnd_check(update, context):
-    phone_number = context.args[0]
-    client_data = clients[clients['phone'] == phone_number]
+    global dnd_check_enabled
+    dnd_check_enabled = not dnd_check_enabled
+    update.message.reply_text(f'DND check is now {"enabled" if dnd_check_enabled else "disabled"}.')
 
-    if client_data.empty:
-        update.message.reply_text(f'No client found with phone number {phone_number}.')
-        return
-
-    client_data = client_data.iloc[0]
-    name = client_data['name']
-    email = client_data['email']
-    platform = client_data['platform']
-
+def view_script(update, context):
     script = context.user_data.get('script', default_script)
-    script = script.format(name=name, email=email, platform=platform)
+    update.message.reply_text(f'Current script:\n{script}')
 
-    # Convert script to speech
-    tts = gTTS(text=script, lang='en')
-    tts.save("output.mp3")
-
-    # Make the call and check for DND
-    try:
-        call = voice.call(phone_number)
-        call.play("output.mp3")
-        time.sleep(5)  # Wait for 5 seconds to check if the call was answered
-        if call.status == 'voicemail':
-            update.message.reply_text(f'{phone_number} is on do-not-disturb. Retrying in 5 minutes.')
-            time.sleep(300)  # Wait for 5 minutes
-            call = voice.call(phone_number)
-            call.play("output.mp3")
-        update.message.reply_text(f'Called {phone_number} with the script.')
-    except AuthenticationError as e:
-        update.message.reply_text(f'Error: {e}')
+def view_gv(update, context):
+    update.message.reply_text('Current Google Voice accounts:\n' + '\n'.join(context.user_data.get('gv_accounts', [])))
 
 # Conversation handlers
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler('addgv', add_gv),
                   CommandHandler('importscript', import_script),
+                  CommandHandler('editscript', edit_script),
+                  CommandHandler('editgv', edit_gv),
                   CommandHandler('startbatch', start_batch)],
     states={
         ADD_GV: [MessageHandler(Filters.text & ~Filters.command, handle_add_gv)],
         IMPORT_SCRIPT: [MessageHandler(Filters.text & ~Filters.command, handle_import_script)],
-        START_BATCH: [MessageHandler(Filters.document.mime_type("text/csv") | Filters.document.mime_type("application/vnd.ms-excel"), handle_start_batch)]
+        EDIT_SCRIPT: [MessageHandler(Filters.text & ~Filters.command, handle_edit_script)],
+        EDIT_GV: [MessageHandler(Filters.text & ~Filters.command, handle_edit_gv)],
+        START_BATCH: [MessageHandler(Filters.document.mime_type("text/plain"), handle_start_batch)]
     },
     fallbacks=[CommandHandler('cancel', ConversationHandler.END)]
 )
@@ -176,6 +190,8 @@ dispatcher.add_handler(conv_handler)
 dispatcher.add_handler(CommandHandler("start", start))
 dispatcher.add_handler(CommandHandler("call", call))
 dispatcher.add_handler(CommandHandler("dndcheck", dnd_check))
+dispatcher.add_handler(CommandHandler("viewscript", view_script))
+dispatcher.add_handler(CommandHandler("viewgv", view_gv))
 
 updater.start_polling()
 updater.idle()
