@@ -1,7 +1,8 @@
 import os
 import pandas as pd
 import telegram
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler, CallbackContext, CallbackQueryHandler
 from gtts import gTTS
 from pygooglevoice import Voice
 from pygooglevoice.exceptions import AuthenticationError
@@ -26,41 +27,55 @@ ADD_GV, IMPORT_SCRIPT, START_BATCH, EDIT_SCRIPT, EDIT_GV = range(5)
 # DND check toggle
 dnd_check_enabled = False
 
-def start(update, context):
-    update.message.reply_text('Welcome! Use the following commands:\n'
-                              '/addgv - Add a Google Voice account\n'
-                              '/importscript - Import a custom script\n'
-                              '/editscript - Edit the current script\n'
-                              '/editgv - Edit Google Voice accounts\n'
-                              '/startbatch - Start a batch call\n'
-                              '/call <name> <platform> <email> <phone> - Make a call\n'
-                              '/dndcheck - Toggle DND check\n'
-                              '/viewscript - View the current script\n'
-                              '/viewgv - View current Google Voice accounts')
+def start(update: Update, context: CallbackContext) -> None:
+    keyboard = [
+        [InlineKeyboardButton("Add Google Voice", callback_data='addgv')],
+        [InlineKeyboardButton("Import Script", callback_data='importscript')],
+        [InlineKeyboardButton("Edit Script", callback_data='editscript')],
+        [InlineKeyboardButton("Edit Google Voice", callback_data='editgv')],
+        [InlineKeyboardButton("Start Batch Call", callback_data='startbatch')],
+        [InlineKeyboardButton("Toggle DND Check", callback_data='dndcheck')],
+        [InlineKeyboardButton("View Script", callback_data='viewscript')],
+        [InlineKeyboardButton("View Google Voice Accounts", callback_data='viewgv')]
+    ]
 
-def add_gv(update, context):
-    update.message.reply_text('Please provide your Google Voice credentials in the format:\n'
-                              'google voice email:password:backup email:backup email code (if asked)')
-    return ADD_GV
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-def import_script(update, context):
-    update.message.reply_text('Please provide your custom script. Use {name}, {email}, and {platform} as placeholders.')
-    return IMPORT_SCRIPT
+    update.message.reply_text('Welcome! Please choose an option:', reply_markup=reply_markup)
 
-def edit_script(update, context):
-    update.message.reply_text('Please provide the new script. Use {name}, {email}, and {platform} as placeholders.')
-    return EDIT_SCRIPT
+def button(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    query.answer()
 
-def edit_gv(update, context):
-    update.message.reply_text('Please provide the Google Voice account details you want to edit in the format:\n'
-                              'old email:new email:new password:new backup email:new backup email code (if asked)')
-    return EDIT_GV
+    if query.data == 'addgv':
+        query.edit_message_text(text="Please provide your Google Voice credentials in the format:\n"
+                                     "google voice email:password:backup email:backup email code (if asked)")
+        return ADD_GV
+    elif query.data == 'importscript':
+        query.edit_message_text(text="Please provide your custom script. Use {name}, {email}, and {platform} as placeholders.")
+        return IMPORT_SCRIPT
+    elif query.data == 'editscript':
+        query.edit_message_text(text="Please provide the new script. Use {name}, {email}, and {platform} as placeholders.")
+        return EDIT_SCRIPT
+    elif query.data == 'editgv':
+        query.edit_message_text(text="Please provide the Google Voice account details you want to edit in the format:\n"
+                                     "old email:new email:new password:new backup email:new backup email code (if asked)")
+        return EDIT_GV
+    elif query.data == 'startbatch':
+        query.edit_message_text(text="Drop your data file here.")
+        return START_BATCH
+    elif query.data == 'dndcheck':
+        global dnd_check_enabled
+        dnd_check_enabled = not dnd_check_enabled
+        query.edit_message_text(text=f'DND check is now {"enabled" if dnd_check_enabled else "disabled"}.')
+    elif query.data == 'viewscript':
+        script = context.user_data.get('script', default_script)
+        query.edit_message_text(text=f'Current script:\n{script}')
+    elif query.data == 'viewgv':
+        gv_accounts = context.user_data.get('gv_accounts', [])
+        query.edit_message_text(text='Current Google Voice accounts:\n' + '\n'.join(gv_accounts))
 
-def start_batch(update, context):
-    update.message.reply_text('Drop your data file here.')
-    return START_BATCH
-
-def handle_add_gv(update, context):
+def handle_add_gv(update: Update, context: CallbackContext) -> int:
     credentials = update.message.text.split(':')
     if len(credentials) < 3 or len(credentials) > 4:
         update.message.reply_text('Invalid format. Please try again.')
@@ -73,24 +88,25 @@ def handle_add_gv(update, context):
     try:
         voice.login(email, password, backup_email, backup_code)
         update.message.reply_text('Google Voice account added successfully.')
+        context.user_data.setdefault('gv_accounts', []).append(email)
     except AuthenticationError as e:
         update.message.reply_text(f'Error: {e}')
 
     return ConversationHandler.END
 
-def handle_import_script(update, context):
+def handle_import_script(update: Update, context: CallbackContext) -> int:
     script = update.message.text
     context.user_data['script'] = script
     update.message.reply_text('Script imported successfully.')
     return ConversationHandler.END
 
-def handle_edit_script(update, context):
+def handle_edit_script(update: Update, context: CallbackContext) -> int:
     script = update.message.text
     context.user_data['script'] = script
     update.message.reply_text('Script edited successfully.')
     return ConversationHandler.END
 
-def handle_edit_gv(update, context):
+def handle_edit_gv(update: Update, context: CallbackContext) -> int:
     details = update.message.text.split(':')
     if len(details) < 4 or len(details) > 5:
         update.message.reply_text('Invalid format. Please try again.')
@@ -103,12 +119,13 @@ def handle_edit_gv(update, context):
     try:
         voice.login(old_email, new_password, new_backup_email, new_backup_code)
         update.message.reply_text('Google Voice account edited successfully.')
+        context.user_data['gv_accounts'] = [new_email if email == old_email else email for email in context.user_data.get('gv_accounts', [])]
     except AuthenticationError as e:
         update.message.reply_text(f'Error: {e}')
 
     return ConversationHandler.END
 
-def handle_start_batch(update, context):
+def handle_start_batch(update: Update, context: CallbackContext) -> int:
     if 'document' in update.message:
         file = update.message.document.get_file()
         file.download('clients.txt')
@@ -135,7 +152,7 @@ def handle_start_batch(update, context):
         update.message.reply_text('No data file received. Please try again.')
     return ConversationHandler.END
 
-def call(update, context):
+def call(update: Update, context: CallbackContext) -> None:
     args = context.args
     if len(args) != 4:
         update.message.reply_text('Usage: /call <name> <platform> <email> <phone>')
@@ -157,25 +174,9 @@ def call(update, context):
     except AuthenticationError as e:
         update.message.reply_text(f'Error: {e}')
 
-def dnd_check(update, context):
-    global dnd_check_enabled
-    dnd_check_enabled = not dnd_check_enabled
-    update.message.reply_text(f'DND check is now {"enabled" if dnd_check_enabled else "disabled"}.')
-
-def view_script(update, context):
-    script = context.user_data.get('script', default_script)
-    update.message.reply_text(f'Current script:\n{script}')
-
-def view_gv(update, context):
-    update.message.reply_text('Current Google Voice accounts:\n' + '\n'.join(context.user_data.get('gv_accounts', [])))
-
 # Conversation handlers
 conv_handler = ConversationHandler(
-    entry_points=[CommandHandler('addgv', add_gv),
-                  CommandHandler('importscript', import_script),
-                  CommandHandler('editscript', edit_script),
-                  CommandHandler('editgv', edit_gv),
-                  CommandHandler('startbatch', start_batch)],
+    entry_points=[CallbackQueryHandler(button, pattern='^addgv$|^importscript$|^editscript$|^editgv$|^startbatch$')],
     states={
         ADD_GV: [MessageHandler(Filters.text & ~Filters.command, handle_add_gv)],
         IMPORT_SCRIPT: [MessageHandler(Filters.text & ~Filters.command, handle_import_script)],
@@ -189,9 +190,7 @@ conv_handler = ConversationHandler(
 dispatcher.add_handler(conv_handler)
 dispatcher.add_handler(CommandHandler("start", start))
 dispatcher.add_handler(CommandHandler("call", call))
-dispatcher.add_handler(CommandHandler("dndcheck", dnd_check))
-dispatcher.add_handler(CommandHandler("viewscript", view_script))
-dispatcher.add_handler(CommandHandler("viewgv", view_gv))
+dispatcher.add_handler(CallbackQueryHandler(button))
 
 updater.start_polling()
 updater.idle()
